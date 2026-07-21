@@ -15,10 +15,10 @@ This project aims to learn
 
 ## Roadmap
 
-- [ ] v0.1 SET / GET / DEL
-- [ ] v0.2 Persistence
-- [ ] v0.3 CLI
-- [ ] v0.4 TCP Server
-- [ ] v0.5 Multi Thread
-- [ ] v0.6 Replication
+- [x] v0.1 SET / GET / DEL
+- [x] v0.2 Persistence
+- [x] v0.3 CLI
+- [x] v0.4 TCP Server
+- [x] v0.5 Multi Thread
+- [x] v0.6 Replication
 
