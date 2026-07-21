@@ -5,11 +5,16 @@ import com.example.miniredis.storage.KeyValueStore;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 public class AofManager {
 
     private final String filePath;
     private BufferedWriter writer;
+    // Replica 서버로 명령어를 전파하기 위한 이벤트 리스너 목록
+    private final List<Consumer<String>> commandListeners = new CopyOnWriteArrayList<>();
 
     public AofManager(String filePath) {
         this.filePath = filePath;
@@ -18,7 +23,6 @@ public class AofManager {
 
     private void initWriter() {
         try {
-            // 기존 파일이 존재하면 이어쓰기(append: true) 모드로 BufferedWriter 생성
             FileWriter fw = new FileWriter(filePath, true);
             this.writer = new BufferedWriter(fw);
         } catch (IOException e) {
@@ -26,22 +30,25 @@ public class AofManager {
         }
     }
 
-    /**
-     * 명령어를 AOF 파일에 기록
-     */
+    public void addCommandListener(Consumer<String> listener) {
+        commandListeners.add(listener);
+    }
+
     public synchronized void append(String command) {
         try {
             writer.write(command);
             writer.newLine();
-            writer.flush(); // 즉시 파일에 쓰기
+            writer.flush();
+
+            // 연결된 Replica들에게 명령어 전파 (Broadcasting)
+            for (Consumer<String> listener : commandListeners) {
+                listener.accept(command);
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    /**
-     * 서버 재시작 시 AOF 파일 읽어 데이터 복구
-     */
     public void load(KeyValueStore store) {
         File file = new File(filePath);
         if (!file.exists()) {
@@ -52,16 +59,13 @@ public class AofManager {
             String line;
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
-                if (line.isEmpty()) {
-                    continue;
-                }
+                if (line.isEmpty()) continue;
 
                 String[] parts = line.split("\\s+");
                 if (parts.length == 0) continue;
 
                 String command = parts[0].toUpperCase();
 
-                // 복구 시에는 AOF에 다시 쓰지 않는 메서드 호출!
                 if ("SET".equals(command) && parts.length >= 3) {
                     store.setWithoutAof(parts[1], parts[2]);
                 } else if ("DEL".equals(command) && parts.length >= 2) {
@@ -73,10 +77,6 @@ public class AofManager {
         }
     }
 
-
-    /**
-     * 파일 자원 해제
-     */
     public void close() {
         try {
             if (writer != null) {

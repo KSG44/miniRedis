@@ -1,5 +1,6 @@
 package com.example.miniredis.network;
 
+import com.example.miniredis.persistence.AofManager;
 import com.example.miniredis.storage.KeyValueStore;
 
 import java.io.BufferedReader;
@@ -15,12 +16,19 @@ public class RedisServer {
 
     private final int port;
     private final KeyValueStore store;
-    // 동시 접속 처리를 위한 쓰레드 풀 (최대 10개 쓰레드)
+    private final AofManager aofManager; // 추가된 부분!
     private final ExecutorService threadPool = Executors.newFixedThreadPool(10);
 
+    // 기존 테스트 코드 호환용 생성자
     public RedisServer(int port, KeyValueStore store) {
+        this(port, store, null);
+    }
+
+    // AofManager를 포함하는 생성자
+    public RedisServer(int port, KeyValueStore store, AofManager aofManager) {
         this.port = port;
         this.store = store;
+        this.aofManager = aofManager; // 추가된 부분!
     }
 
     public void start() {
@@ -47,8 +55,6 @@ public class RedisServer {
      * 개별 클라이언트 요청 처리 (별도 쓰레드에서 실행됨)
      */
     private void handleClient(Socket clientSocket, RespHandler respHandler) {
-        System.out.println("Client connected: " + clientSocket.getRemoteSocketAddress());
-
         try (
                 BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 OutputStream output = clientSocket.getOutputStream()
@@ -56,20 +62,26 @@ public class RedisServer {
             while (true) {
                 String response = respHandler.processCommand(reader);
                 if (response == null) {
-                    break; // 클라이언트 연결 종료
+                    break;
                 }
                 if (!response.isEmpty()) {
                     output.write(response.getBytes());
                     output.flush();
+
+                    // 만약 클라이언트가 REPLCONF SYNC를 보냈다면, 이 소켓을 AOF 명령어 리스너로 등록
+                    if (response.contains("SLAVE SYNC STARTED") && aofManager != null) {
+                        aofManager.addCommandListener(cmd -> {
+                            try {
+                                output.write((cmd + "\r\n").getBytes());
+                                output.flush();
+                            } catch (IOException e) {
+                                // 소켓 끊김
+                            }
+                        });
+                    }
                 }
             }
-        } catch (IOException e) {
-            // 클라이언트 비정상 종료 시 처리
-        } finally {
-            try {
-                clientSocket.close();
-            } catch (IOException ignored) {}
-            System.out.println("Client disconnected: " + clientSocket.getRemoteSocketAddress());
+        } catch (IOException ignored) {
         }
     }
 }

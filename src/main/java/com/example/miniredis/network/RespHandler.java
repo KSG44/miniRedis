@@ -81,6 +81,14 @@ public class RespHandler {
                 boolean deleted = store.delete(args[1]);
                 return ":" + (deleted ? 1 : 0) + "\r\n";
 
+
+            case "REPLCONF":
+                if (args.length >= 2 && "SYNC".equalsIgnoreCase(args[1])) {
+                    // 복제 연결 요청 수락
+                    return "+OK SLAVE SYNC STARTED\r\n";
+                }
+                return "+OK\r\n";
+
             default:
                 return "-ERR unknown command '" + args[0] + "'\r\n";
         }
