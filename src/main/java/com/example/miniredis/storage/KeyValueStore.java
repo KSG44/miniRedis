@@ -1,29 +1,47 @@
 package com.example.miniredis.storage;
 
+import com.example.miniredis.persistence.AofManager;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class KeyValueStore {
 
     private final Map<String, DataValue> store = new ConcurrentHashMap<>();
+    private final AofManager aofManager;
 
-    /**
-     * 기본 SET (만료 시간 없음)
-     */
-    public void set(String key, String value) {
+    public KeyValueStore() {
+        this.aofManager = null;
+    }
+
+    public KeyValueStore(AofManager aofManager) {
+        this.aofManager = aofManager;
+    }
+
+    // AOF에 기록하지 않는 내부용 SET (AOF 복구 시 사용)
+    public void setWithoutAof(String key, String value) {
         store.put(key, new DataValue(value, null));
     }
 
-    /**
-     * SET with TTL (밀리초 단위 만료 시간 설정)
-     */
-    public void setEx(String key, String value, long ttlMillis) {
-        store.put(key, new DataValue(value, ttlMillis));
+    // AOF에 기록하지 않는 내부용 DEL (AOF 복구 시 사용)
+    public void deleteWithoutAof(String key) {
+        store.remove(key);
     }
 
-    /**
-     * GET (Lazy Expiration 적용)
-     */
+    public void set(String key, String value) {
+        store.put(key, new DataValue(value, null));
+        if (aofManager != null) {
+            aofManager.append("SET " + key + " " + value);
+        }
+    }
+
+    public void setEx(String key, String value, long ttlMillis) {
+        store.put(key, new DataValue(value, ttlMillis));
+        if (aofManager != null) {
+            aofManager.append("SET " + key + " " + value);
+        }
+    }
+
     public String get(String key) {
         DataValue dataValue = store.get(key);
 
@@ -31,25 +49,25 @@ public class KeyValueStore {
             return null;
         }
 
-        // Lazy Expiration: 조회 시점에 만료되었으면 삭제 후 null 반환
         if (dataValue.isExpired()) {
             store.remove(key);
+            if (aofManager != null) {
+                aofManager.append("DEL " + key);
+            }
             return null;
         }
 
         return dataValue.getValue();
     }
 
-    /**
-     * DEL
-     */
     public boolean delete(String key) {
-        return store.remove(key) != null;
+        boolean removed = store.remove(key) != null;
+        if (removed && aofManager != null) {
+            aofManager.append("DEL " + key);
+        }
+        return removed;
     }
 
-    /**
-     * 현재 저장소의 데이터 개수 (만료된 데이터가 포함되어 있을 수 있음)
-     */
     public int size() {
         return store.size();
     }
