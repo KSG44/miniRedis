@@ -2,6 +2,7 @@ package com.example.miniredis;
 
 import com.example.miniredis.network.RedisServer;
 import com.example.miniredis.persistence.AofManager;
+import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 import com.example.miniredis.storage.scheduler.ActiveExpirationScheduler;
 
@@ -18,10 +19,12 @@ public class Main {
         // 2. 기존 AOF 로드
         aofManager.load(store);
 
+        ServerStats stats = new ServerStats();
+
         ActiveExpirationScheduler scheduler = new ActiveExpirationScheduler(store);
         scheduler.start();
 
-        RedisServer server = new RedisServer(PORT, store);
+        RedisServer server = new RedisServer( PORT, store, aofManager, stats);
         server.start();
 
 

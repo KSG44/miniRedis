@@ -1,6 +1,7 @@
 package com.example.miniredis.network;
 
 import com.example.miniredis.persistence.AofManager;
+import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 
 import java.io.BufferedReader;
@@ -18,10 +19,14 @@ public class RedisServer {
     private final KeyValueStore store;
     private final AofManager aofManager; // 추가된 부분!
     private final ExecutorService threadPool = Executors.newFixedThreadPool(10);
+    private ServerStats stats;
 
     // 기존 테스트 코드 호환용 생성자
-    public RedisServer(int port, KeyValueStore store) {
-        this(port, store, null);
+    public RedisServer(int port, KeyValueStore store, AofManager aofManager ,ServerStats stats) {
+        this.port = port;
+        this.store = store;
+        this.stats = stats;
+        this.aofManager = aofManager;
     }
 
     // AofManager를 포함하는 생성자
@@ -32,7 +37,7 @@ public class RedisServer {
     }
 
     public void start() {
-        RespHandler respHandler = new RespHandler(store);
+        RespHandler respHandler = new RespHandler(store, stats);
 
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("=== Mini Redis Multi-Threaded Server listening on port " + port + " ===");

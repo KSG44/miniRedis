@@ -1,6 +1,7 @@
 package com.example.miniredis.network;
 
 import com.example.miniredis.network.command.CommandDispatcher;
+import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 
 import java.io.BufferedReader;
@@ -10,8 +11,8 @@ public class RespHandler {
 
     private final CommandDispatcher dispatcher;
 
-    public RespHandler(KeyValueStore store) {
-        this.dispatcher = new CommandDispatcher(store);
+    public RespHandler(KeyValueStore store, ServerStats stats) {
+        this.dispatcher = new CommandDispatcher(store, stats);
     }
 
     /**
