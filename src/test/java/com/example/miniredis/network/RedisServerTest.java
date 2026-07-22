@@ -1,5 +1,6 @@
 package com.example.miniredis.network;
 
+import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,8 +24,9 @@ class RedisServerTest {
     void setUp() throws InterruptedException {
         // 서버를 별도 스레드에서 비동기로 실행
         KeyValueStore store = new KeyValueStore();
-        RedisServer server = new RedisServer(TEST_PORT, store);
+        ServerStats stats = new ServerStats();
 
+        RedisServer server = new RedisServer(TEST_PORT, store, null, stats);
         serverThread = new Thread(server::start);
         serverThread.start();
 

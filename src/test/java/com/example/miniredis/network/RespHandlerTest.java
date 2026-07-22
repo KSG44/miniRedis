@@ -1,5 +1,6 @@
 package com.example.miniredis.network;
 
+import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -20,7 +21,10 @@ class RespHandlerTest {
     @BeforeEach
     void setUp() {
         store = new KeyValueStore();
-        respHandler = new RespHandler(store);
+
+        ServerStats stats = new ServerStats();
+
+        respHandler = new RespHandler(store, stats);
     }
 
     private BufferedReader createReader(String input) {
