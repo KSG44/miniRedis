@@ -3,6 +3,8 @@ package com.example.miniredis.network.command.impl;
 import com.example.miniredis.network.command.Command;
 import com.example.miniredis.storage.KeyValueStore;
 
+import java.util.concurrent.TimeUnit;
+
 public class SetExCommand implements Command {
 
     private final KeyValueStore store;
@@ -21,7 +23,7 @@ public class SetExCommand implements Command {
 
             long ttl = Long.parseLong(args[3]);
 
-            store.setEx(args[1], args[2], ttl);
+            store.setEx(args[1], args[2], TimeUnit.SECONDS.toMillis(ttl));
 
             return "+OK\r\n";
 

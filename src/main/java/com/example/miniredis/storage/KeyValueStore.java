@@ -3,6 +3,7 @@ package com.example.miniredis.storage;
 import com.example.miniredis.persistence.AofManager;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class KeyValueStore {
@@ -49,15 +50,31 @@ public class KeyValueStore {
             return null;
         }
 
-        if (dataValue.isExpired()) {
-            store.remove(key);
-            if (aofManager != null) {
-                aofManager.append("DEL " + key);
-            }
+        removeExpired(key);
+
+        dataValue = store.get(key);
+
+        if(dataValue == null){
             return null;
         }
 
         return dataValue.getValue();
+    }
+    public void removeExpired(String key) {
+
+        DataValue dataValue = store.get(key);
+
+        if (dataValue == null)
+            return;
+
+        if (!dataValue.isExpired())
+            return;
+
+        store.remove(key);
+
+        if (aofManager != null) {
+            aofManager.append("DEL " + key);
+        }
     }
 
     public boolean delete(String key) {
@@ -70,5 +87,8 @@ public class KeyValueStore {
 
     public int size() {
         return store.size();
+    }
+    public Set<String> keys() {
+        return store.keySet();
     }
 }
