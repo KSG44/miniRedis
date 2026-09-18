@@ -25,8 +25,13 @@ public class Main {
         scheduler.start();
 
         RedisServer server = new RedisServer( PORT, store, aofManager, stats);
-        server.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            server.stop();
+            scheduler.stop();
+            aofManager.close();
+        }));
 
+        server.start();
 
     }
 }

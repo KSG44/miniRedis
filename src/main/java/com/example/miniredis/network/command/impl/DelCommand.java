@@ -14,7 +14,7 @@ public class DelCommand implements Command {
     @Override
     public String execute(String[] args) {
 
-        if (args.length < 2)
+        if (args.length != 2)
             return "-ERR wrong number of arguments for 'del'\r\n";
 
         boolean deleted = store.delete(args[1]);

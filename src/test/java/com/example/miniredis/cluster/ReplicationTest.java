@@ -23,6 +23,8 @@ class ReplicationTest {
     private KeyValueStore replicaStore;
     private AofManager primaryAofManager;
     private Thread primaryServerThread;
+    private RedisServer primaryServer;
+    private ReplicaClient replicaClient;
 
     @BeforeEach
     void setUp() throws InterruptedException {
@@ -32,7 +34,7 @@ class ReplicationTest {
         // 1. Primary 서버 기동
         primaryAofManager = new AofManager(PRIMARY_AOF);
         primaryStore = new KeyValueStore(primaryAofManager);
-        RedisServer primaryServer = new RedisServer(PRIMARY_PORT, primaryStore, primaryAofManager);
+        primaryServer = new RedisServer(PRIMARY_PORT, primaryStore, primaryAofManager);
 
         primaryServerThread = new Thread(primaryServer::start);
         primaryServerThread.start();
@@ -40,15 +42,25 @@ class ReplicationTest {
 
         // 2. Replica 메모리 및 동기화 클라이언트 생성
         replicaStore = new KeyValueStore();
-        ReplicaClient replicaClient = new ReplicaClient("localhost", PRIMARY_PORT, replicaStore);
+        replicaClient = new ReplicaClient("localhost", PRIMARY_PORT, replicaStore);
         replicaClient.startSync();
         Thread.sleep(200);
     }
 
     @AfterEach
     void tearDown() {
-        if (primaryServerThread != null && primaryServerThread.isAlive()) {
-            primaryServerThread.interrupt();
+        if (replicaClient != null) {
+            replicaClient.stop();
+        }
+        if (primaryServer != null) {
+            primaryServer.stop();
+        }
+        if (primaryServerThread != null) {
+            try {
+                primaryServerThread.join(1_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         if (primaryAofManager != null) {
             primaryAofManager.close();
@@ -73,5 +85,27 @@ class ReplicationTest {
 
         // Replica의 메모리 저장소에서 Primary가 넘겨준 값이 존재하는지 확인
         assertThat(replicaStore.get("cluster_key")).isEqualTo("hello_replica");
+    }
+
+    @Test
+    @DisplayName("공백과 한글이 포함된 값도 Replica에 손실 없이 동기화되어야 한다")
+    void replicationPreservesSpecialValues() throws Exception {
+        primaryStore.set("사용자 이름", "홍 길동");
+
+        Thread.sleep(200);
+
+        assertThat(replicaStore.get("사용자 이름")).isEqualTo("홍 길동");
+    }
+
+    @Test
+    @DisplayName("SETEX의 만료 시각도 Replica에 전파되어야 한다")
+    void replicationPreservesExpiration() throws Exception {
+        primaryStore.setEx("session", "active", 150);
+        Thread.sleep(50);
+
+        assertThat(replicaStore.get("session")).isEqualTo("active");
+
+        Thread.sleep(130);
+        assertThat(replicaStore.get("session")).isNull();
     }
 }

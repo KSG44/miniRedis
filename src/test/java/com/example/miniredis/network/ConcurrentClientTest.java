@@ -15,6 +15,8 @@ import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -22,13 +24,14 @@ class ConcurrentClientTest {
 
     private static final int TEST_PORT = 6381;
     private Thread serverThread;
+    private RedisServer server;
 
     @BeforeEach
     void setUp() throws InterruptedException {
         KeyValueStore store = new KeyValueStore();
         ServerStats stats = new ServerStats();
 
-        RedisServer server = new RedisServer(TEST_PORT, store, null, stats);
+        server = new RedisServer(TEST_PORT, store, null, stats);
         serverThread = new Thread(server::start);
         serverThread.start();
         Thread.sleep(200); // 서버 시작 대기
@@ -36,8 +39,15 @@ class ConcurrentClientTest {
 
     @AfterEach
     void tearDown() {
-        if (serverThread != null && serverThread.isAlive()) {
-            serverThread.interrupt();
+        if (server != null) {
+            server.stop();
+        }
+        if (serverThread != null) {
+            try {
+                serverThread.join(1_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -47,6 +57,7 @@ class ConcurrentClientTest {
         int clientCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(clientCount);
         CountDownLatch latch = new CountDownLatch(clientCount);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
 
         for (int i = 0; i < clientCount; i++) {
             final int clientId = i;
@@ -66,15 +77,16 @@ class ConcurrentClientTest {
                     String getVal = in.readLine();
                     assertThat(getVal).isEqualTo("val_" + clientId);
 
-                } catch (IOException e) {
-                    e.printStackTrace();
+                } catch (Throwable e) {
+                    failure.compareAndSet(null, e);
                 } finally {
                     latch.countDown();
                 }
             });
         }
 
-        latch.await(); // 모든 클라이언트 작업 종료 대기
-        executor.shutdown();
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        executor.shutdownNow();
+        assertThat(failure.get()).isNull();
     }
 }

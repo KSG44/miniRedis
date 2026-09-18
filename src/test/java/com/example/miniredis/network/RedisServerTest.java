@@ -19,6 +19,7 @@ class RedisServerTest {
 
     private static final int TEST_PORT = 6380;
     private Thread serverThread;
+    private RedisServer server;
 
     @BeforeEach
     void setUp() throws InterruptedException {
@@ -26,7 +27,7 @@ class RedisServerTest {
         KeyValueStore store = new KeyValueStore();
         ServerStats stats = new ServerStats();
 
-        RedisServer server = new RedisServer(TEST_PORT, store, null, stats);
+        server = new RedisServer(TEST_PORT, store, null, stats);
         serverThread = new Thread(server::start);
         serverThread.start();
 
@@ -36,8 +37,15 @@ class RedisServerTest {
 
     @AfterEach
     void tearDown() {
-        if (serverThread != null && serverThread.isAlive()) {
-            serverThread.interrupt();
+        if (server != null) {
+            server.stop();
+        }
+        if (serverThread != null) {
+            try {
+                serverThread.join(1_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -62,5 +70,14 @@ class RedisServerTest {
             assertThat(lengthLine).isEqualTo("$11");
             assertThat(valueLine).isEqualTo("hello_world");
         }
+    }
+
+    @Test
+    @DisplayName("stop 호출 시 서버 스레드가 종료되고 새 연결을 받지 않는다")
+    void stopClosesServerSocket() throws Exception {
+        server.stop();
+        serverThread.join(1_000);
+
+        assertThat(serverThread.isAlive()).isFalse();
     }
 }

@@ -20,6 +20,10 @@ public class InfoCommand implements Command {
     @Override
     public String execute(String[] args) {
 
+        if (args.length != 1) {
+            return "-ERR wrong number of arguments for 'info'\r\n";
+        }
+
         StringBuilder info = new StringBuilder();
 
         info.append("# Server\r\n");

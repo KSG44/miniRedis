@@ -1,5 +1,6 @@
 package com.example.miniredis.cluster;
 
+import com.example.miniredis.persistence.AofManager;
 import com.example.miniredis.storage.KeyValueStore;
 
 import java.io.BufferedReader;
@@ -7,12 +8,16 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-public class ReplicaClient {
+public class ReplicaClient implements AutoCloseable {
 
     private final String primaryHost;
     private final int primaryPort;
     private final KeyValueStore replicaStore;
+    private final AtomicBoolean running = new AtomicBoolean();
+    private volatile Socket socket;
+    private volatile Thread syncThread;
 
     public ReplicaClient(String primaryHost, int primaryPort, KeyValueStore replicaStore) {
         this.primaryHost = primaryHost;
@@ -21,33 +26,55 @@ public class ReplicaClient {
     }
 
     public void startSync() {
-        new Thread(() -> {
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
+
+        syncThread = new Thread(() -> {
             try (
-                    Socket socket = new Socket(primaryHost, primaryPort);
-                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))
+                    Socket connectedSocket = new Socket(primaryHost, primaryPort);
+                    PrintWriter out = new PrintWriter(connectedSocket.getOutputStream(), true);
+                    BufferedReader in = new BufferedReader(new InputStreamReader(connectedSocket.getInputStream()))
             ) {
+                socket = connectedSocket;
                 // Primary 서버에게 복구/동기화 요청 명령어 전송
                 out.println("REPLCONF SYNC");
 
                 String line;
-                while ((line = in.readLine()) != null) {
-                    line = line.trim();
-                    if (line.isEmpty() || line.startsWith("+") || line.startsWith("-")) continue;
+                while (running.get() && (line = in.readLine()) != null) {
+                    if (line.isBlank() || line.startsWith("+") || line.startsWith("-")) continue;
 
-                    String[] parts = line.split("\\s+");
-                    String command = parts[0].toUpperCase();
-
-                    // Primary에서 넘어온 쓰기 명령어를 Replica 로컬 메모리에 반영
-                    if ("SET".equalsIgnoreCase(command) && parts.length >= 3) {
-                        replicaStore.setWithoutAof(parts[1], parts[2]);
-                    } else if ("DEL".equalsIgnoreCase(command) && parts.length >= 2) {
-                        replicaStore.deleteWithoutAof(parts[1]);
-                    }
+                    AofManager.applyRecord(line, replicaStore);
                 }
             } catch (IOException e) {
-                System.out.println("Replica sync disconnected: " + e.getMessage());
+                if (running.get()) {
+                    System.out.println("Replica sync disconnected: " + e.getMessage());
+                }
+            } finally {
+                socket = null;
+                running.set(false);
             }
-        }).start();
+        }, "mini-redis-replica-sync");
+        syncThread.start();
+    }
+
+    public void stop() {
+        running.set(false);
+        Socket connectedSocket = socket;
+        if (connectedSocket != null) {
+            try {
+                connectedSocket.close();
+            } catch (IOException ignored) {
+            }
+        }
+        Thread thread = syncThread;
+        if (thread != null) {
+            thread.interrupt();
+        }
+    }
+
+    @Override
+    public void close() {
+        stop();
     }
 }

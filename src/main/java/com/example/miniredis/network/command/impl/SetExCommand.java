@@ -3,8 +3,6 @@ package com.example.miniredis.network.command.impl;
 import com.example.miniredis.network.command.Command;
 import com.example.miniredis.storage.KeyValueStore;
 
-import java.util.concurrent.TimeUnit;
-
 public class SetExCommand implements Command {
 
     private final KeyValueStore store;
@@ -16,20 +14,29 @@ public class SetExCommand implements Command {
     @Override
     public String execute(String[] args) {
 
-        if (args.length < 4)
+        if (args.length != 4)
             return "-ERR wrong number of arguments for 'setex'\r\n";
 
         try {
 
-            long ttl = Long.parseLong(args[3]);
+            long ttl = Long.parseLong(args[2]);
 
-            store.setEx(args[1], args[2], TimeUnit.SECONDS.toMillis(ttl));
+            if (ttl <= 0) {
+                return "-ERR invalid expire time in 'setex' command\r\n";
+            }
+
+            long ttlMillis = Math.multiplyExact(ttl, 1_000L);
+            store.setEx(args[1], args[3], ttlMillis);
 
             return "+OK\r\n";
 
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException | ArithmeticException e) {
 
             return "-ERR value is not an integer or out of range\r\n";
+
+        } catch (IllegalArgumentException e) {
+
+            return "-ERR invalid expire time in 'setex' command\r\n";
 
         }
     }

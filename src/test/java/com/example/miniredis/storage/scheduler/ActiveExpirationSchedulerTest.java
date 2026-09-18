@@ -20,13 +20,13 @@ class ActiveExpirationSchedulerTest {
         ActiveExpirationScheduler scheduler =
                 new ActiveExpirationScheduler(store, 50);
 
-        scheduler.start();
-
-        Thread.sleep(250);
-
-        assertThat(store.get("name")).isNull();
-
-        scheduler.stop();
+        try {
+            scheduler.start();
+            Thread.sleep(250);
+            assertThat(store.get("name")).isNull();
+        } finally {
+            scheduler.stop();
+        }
     }
 
     @Test
@@ -41,12 +41,29 @@ class ActiveExpirationSchedulerTest {
         ActiveExpirationScheduler scheduler =
                 new ActiveExpirationScheduler(store, 50);
 
-        scheduler.start();
+        try {
+            scheduler.start();
+            Thread.sleep(200);
+            assertThat(store.get("name")).isEqualTo("gon");
+        } finally {
+            scheduler.stop();
+        }
+    }
 
-        Thread.sleep(200);
+    @Test
+    @DisplayName("Scheduler를 두 번 시작해도 중복 작업을 만들지 않는다")
+    void startIsIdempotent() throws Exception {
+        KeyValueStore store = new KeyValueStore();
+        store.setEx("name", "gon", 50);
+        ActiveExpirationScheduler scheduler = new ActiveExpirationScheduler(store, 10);
 
-        assertThat(store.get("name")).isEqualTo("gon");
-
-        scheduler.stop();
+        try {
+            scheduler.start();
+            scheduler.start();
+            Thread.sleep(100);
+            assertThat(store.get("name")).isNull();
+        } finally {
+            scheduler.stop();
+        }
     }
 }

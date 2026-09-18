@@ -5,11 +5,15 @@ import com.example.miniredis.storage.KeyValueStore;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
-public class AofManager {
+public class AofManager implements AutoCloseable {
+
+    private static final String FORMAT_PREFIX = "MR1";
 
     private final String filePath;
     private BufferedWriter writer;
@@ -34,18 +38,34 @@ public class AofManager {
         commandListeners.add(listener);
     }
 
-    public synchronized void append(String command) {
+    public void removeCommandListener(Consumer<String> listener) {
+        commandListeners.remove(listener);
+    }
+
+    public void appendSet(String key, String value) {
+        appendRecord("SET", encode(key), encode(value));
+    }
+
+    public void appendSetExAt(String key, String value, long expireAt) {
+        appendRecord("SETEXAT", encode(key), encode(value), Long.toString(expireAt));
+    }
+
+    public void appendDelete(String key) {
+        appendRecord("DEL", encode(key));
+    }
+
+    private synchronized void appendRecord(String command, String... arguments) {
+        String record = FORMAT_PREFIX + "\t" + command + "\t" + String.join("\t", arguments);
         try {
-            writer.write(command);
+            writer.write(record);
             writer.newLine();
             writer.flush();
 
-            // 연결된 Replica들에게 명령어 전파 (Broadcasting)
             for (Consumer<String> listener : commandListeners) {
-                listener.accept(command);
+                listener.accept(record);
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("AOF 기록 실패", e);
         }
     }
 
@@ -58,32 +78,73 @@ public class AofManager {
         try (BufferedReader reader = Files.newBufferedReader(Paths.get(filePath))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty()) continue;
+                if (line.isBlank()) continue;
 
-                String[] parts = line.split("\\s+");
-                if (parts.length == 0) continue;
-
-                String command = parts[0].toUpperCase();
-
-                if ("SET".equals(command) && parts.length >= 3) {
-                    store.setWithoutAof(parts[1], parts[2]);
-                } else if ("DEL".equals(command) && parts.length >= 2) {
-                    store.deleteWithoutAof(parts[1]);
-                }
+                applyRecord(line, store);
             }
         } catch (IOException e) {
-            System.err.println("AOF 복구 중 오류 발생: " + e.getMessage());
+            throw new UncheckedIOException("AOF 복구 실패", e);
         }
     }
 
-    public void close() {
+    public static boolean applyRecord(String record, KeyValueStore store) {
+        if (record.startsWith(FORMAT_PREFIX + "\t")) {
+            return applyCurrentRecord(record, store);
+        }
+        return applyLegacyRecord(record, store);
+    }
+
+    private static boolean applyCurrentRecord(String record, KeyValueStore store) {
+        String[] parts = record.split("\t", -1);
+        try {
+            if (parts.length == 4 && "SET".equals(parts[1])) {
+                store.setWithoutAof(decode(parts[2]), decode(parts[3]));
+                return true;
+            }
+            if (parts.length == 5 && "SETEXAT".equals(parts[1])) {
+                store.setExAtWithoutAof(decode(parts[2]), decode(parts[3]), Long.parseLong(parts[4]));
+                return true;
+            }
+            if (parts.length == 3 && "DEL".equals(parts[1])) {
+                store.deleteWithoutAof(decode(parts[2]));
+                return true;
+            }
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+        return false;
+    }
+
+    private static boolean applyLegacyRecord(String record, KeyValueStore store) {
+        String[] parts = record.split("\\s+");
+        if (parts.length >= 3 && "SET".equalsIgnoreCase(parts[0])) {
+            store.setWithoutAof(parts[1], parts[2]);
+            return true;
+        }
+        if (parts.length >= 2 && "DEL".equalsIgnoreCase(parts[0])) {
+            store.deleteWithoutAof(parts[1]);
+            return true;
+        }
+        return false;
+    }
+
+    private static String encode(String value) {
+        return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decode(String value) {
+        return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public synchronized void close() {
         try {
             if (writer != null) {
                 writer.close();
+                writer = null;
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new UncheckedIOException("AOF 종료 실패", e);
         }
     }
 }

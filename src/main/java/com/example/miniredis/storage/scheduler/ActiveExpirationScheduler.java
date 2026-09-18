@@ -5,12 +5,14 @@ import com.example.miniredis.storage.KeyValueStore;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ActiveExpirationScheduler {
 
     private final ScheduledExecutorService scheduler;
     private final KeyValueStore store;
     private final long intervalMillis;
+    private final AtomicBoolean started = new AtomicBoolean();
 
     // 실제 서버에서 사용하는 생성자
     public ActiveExpirationScheduler(KeyValueStore store) {
@@ -26,6 +28,10 @@ public class ActiveExpirationScheduler {
 
     public void start() {
 
+        if (!started.compareAndSet(false, true)) {
+            return;
+        }
+
         scheduler.scheduleAtFixedRate(() -> {
 
             for (String key : store.keys()) {
@@ -37,6 +43,6 @@ public class ActiveExpirationScheduler {
     }
 
     public void stop() {
-        scheduler.shutdown();
+        scheduler.shutdownNow();
     }
 }

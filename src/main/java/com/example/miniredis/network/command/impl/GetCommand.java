@@ -3,6 +3,8 @@ package com.example.miniredis.network.command.impl;
 import com.example.miniredis.network.command.Command;
 import com.example.miniredis.storage.KeyValueStore;
 
+import java.nio.charset.StandardCharsets;
+
 public class GetCommand implements Command {
 
     private final KeyValueStore store;
@@ -14,7 +16,7 @@ public class GetCommand implements Command {
     @Override
     public String execute(String[] args) {
 
-        if (args.length < 2)
+        if (args.length != 2)
             return "-ERR wrong number of arguments for 'get'\r\n";
 
         String value = store.get(args[1]);
@@ -22,6 +24,6 @@ public class GetCommand implements Command {
         if (value == null)
             return "$-1\r\n";
 
-        return "$" + value.getBytes().length + "\r\n" + value + "\r\n";
+        return "$" + value.getBytes(StandardCharsets.UTF_8).length + "\r\n" + value + "\r\n";
     }
 }
