@@ -14,8 +14,10 @@ import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 public class RedisServer implements AutoCloseable {
@@ -26,8 +28,11 @@ public class RedisServer implements AutoCloseable {
     private final ExecutorService threadPool = Executors.newFixedThreadPool(10);
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
     private final ServerStats stats;
+    private final CountDownLatch started = new CountDownLatch(1);
     private volatile boolean running;
     private volatile ServerSocket serverSocket;
+    private volatile int boundPort = -1;
+    private volatile RuntimeException startupFailure;
 
     public RedisServer(int port, KeyValueStore store, AofManager aofManager ,ServerStats stats) {
         this.port = port;
@@ -49,7 +54,9 @@ public class RedisServer implements AutoCloseable {
         running = true;
         try (ServerSocket listeningSocket = new ServerSocket(port)) {
             this.serverSocket = listeningSocket;
-            System.out.println("=== Mini Redis Multi-Threaded Server listening on port " + port + " ===");
+            this.boundPort = listeningSocket.getLocalPort();
+            started.countDown();
+            System.out.println("=== Mini Redis Multi-Threaded Server listening on port " + boundPort + " ===");
 
             while (running) {
                 // 1. 클라이언트 연결 대기
@@ -61,15 +68,28 @@ public class RedisServer implements AutoCloseable {
             }
         } catch (SocketException e) {
             if (running) {
-                throw new RuntimeException("서버 소켓 오류", e);
+                startupFailure = new RuntimeException("서버 소켓 오류", e);
+                throw startupFailure;
             }
         } catch (IOException e) {
-            throw new RuntimeException("서버 실행 오류", e);
+            startupFailure = new RuntimeException("서버 실행 오류", e);
+            throw startupFailure;
         } finally {
+            started.countDown();
             running = false;
             serverSocket = null;
             threadPool.shutdown();
         }
+    }
+
+    public int awaitStarted(long timeout, TimeUnit unit) throws InterruptedException {
+        if (!started.await(timeout, unit)) {
+            throw new IllegalStateException("서버가 제한 시간 안에 시작되지 않았습니다");
+        }
+        if (startupFailure != null) {
+            throw new IllegalStateException("서버 시작에 실패했습니다", startupFailure);
+        }
+        return boundPort;
     }
 
     /**

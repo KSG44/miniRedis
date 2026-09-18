@@ -12,14 +12,15 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RedisServerTest {
 
-    private static final int TEST_PORT = 6380;
     private Thread serverThread;
     private RedisServer server;
+    private int serverPort;
 
     @BeforeEach
     void setUp() throws InterruptedException {
@@ -27,12 +28,10 @@ class RedisServerTest {
         KeyValueStore store = new KeyValueStore();
         ServerStats stats = new ServerStats();
 
-        server = new RedisServer(TEST_PORT, store, null, stats);
+        server = new RedisServer(0, store, null, stats);
         serverThread = new Thread(server::start);
         serverThread.start();
-
-        // 서버 소켓이 켜질 때까지 잠시 대기
-        Thread.sleep(200);
+        serverPort = server.awaitStarted(2, TimeUnit.SECONDS);
     }
 
     @AfterEach
@@ -53,7 +52,7 @@ class RedisServerTest {
     @DisplayName("실제 TCP Socket 연결을 통해 SET 및 GET 요청 후 정상 응답을 받는다")
     void tcpSocketClientTest() throws IOException {
         try (
-                Socket socket = new Socket("localhost", TEST_PORT);
+                Socket socket = new Socket("localhost", serverPort);
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))
         ) {

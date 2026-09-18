@@ -22,19 +22,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ConcurrentClientTest {
 
-    private static final int TEST_PORT = 6381;
     private Thread serverThread;
     private RedisServer server;
+    private int serverPort;
 
     @BeforeEach
     void setUp() throws InterruptedException {
         KeyValueStore store = new KeyValueStore();
         ServerStats stats = new ServerStats();
 
-        server = new RedisServer(TEST_PORT, store, null, stats);
+        server = new RedisServer(0, store, null, stats);
         serverThread = new Thread(server::start);
         serverThread.start();
-        Thread.sleep(200); // 서버 시작 대기
+        serverPort = server.awaitStarted(2, TimeUnit.SECONDS);
     }
 
     @AfterEach
@@ -63,7 +63,7 @@ class ConcurrentClientTest {
             final int clientId = i;
             executor.execute(() -> {
                 try (
-                        Socket socket = new Socket("localhost", TEST_PORT);
+                        Socket socket = new Socket("localhost", serverPort);
                         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                         BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))
                 ) {

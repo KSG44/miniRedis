@@ -3,6 +3,8 @@ package com.example.miniredis.server;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ServerStatsTest {
@@ -19,11 +21,12 @@ class ServerStatsTest {
 
     @Test
     @DisplayName("Uptime은 시간이 지날수록 증가한다.")
-    void uptime() throws Exception {
+    void uptime() {
 
-        ServerStats stats = new ServerStats();
+        AtomicLong now = new AtomicLong(1_000);
+        ServerStats stats = new ServerStats(now::get);
 
-        Thread.sleep(1200);
+        now.addAndGet(1_200);
 
         assertThat(stats.getUptimeSeconds())
                 .isGreaterThanOrEqualTo(1);

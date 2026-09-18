@@ -4,16 +4,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class KeyValueStoreTest {
 
     private KeyValueStore store;
+    private AtomicLong now;
 
     @BeforeEach
     void setUp() {
-        store = new KeyValueStore();
+        now = new AtomicLong(1_000);
+        store = new KeyValueStore(null, now::get);
     }
 
     @Test
@@ -47,15 +51,14 @@ class KeyValueStoreTest {
 
     @Test
     @DisplayName("TTL 만료 후 GET 시 null 반환 및 삭제 (Lazy Expiration)")
-    void ttlExpiration() throws InterruptedException {
+    void ttlExpiration() {
         // 100ms 후 만료되도록 설정
         store.setEx("tempKey", "tempValue", 100);
 
         // 만료 전 조회
         assertThat(store.get("tempKey")).isEqualTo("tempValue");
 
-        // 150ms 대기
-        Thread.sleep(150);
+        now.addAndGet(150);
 
         // 만료 후 조회 시 null 반환 및 내부 삭제
         assertThat(store.get("tempKey")).isNull();
@@ -63,11 +66,11 @@ class KeyValueStoreTest {
 
     @Test
     @DisplayName("일반 SET으로 덮어쓰면 기존 TTL이 제거된다")
-    void setClearsExistingTtl() throws InterruptedException {
+    void setClearsExistingTtl() {
         store.setEx("key", "temporary", 50);
         store.set("key", "permanent");
 
-        Thread.sleep(80);
+        now.addAndGet(80);
 
         assertThat(store.get("key")).isEqualTo("permanent");
     }
@@ -83,11 +86,11 @@ class KeyValueStoreTest {
 
     @Test
     @DisplayName("size와 keys는 만료되었지만 아직 조회되지 않은 Key를 제외한다")
-    void sizeAndKeysExcludeExpiredEntries() throws InterruptedException {
+    void sizeAndKeysExcludeExpiredEntries() {
         store.set("alive", "value");
         store.setEx("expired", "value", 30);
 
-        Thread.sleep(50);
+        now.addAndGet(50);
 
         assertThat(store.size()).isEqualTo(1);
         assertThat(store.keys()).containsExactly("alive");

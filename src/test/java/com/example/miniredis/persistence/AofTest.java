@@ -8,11 +8,14 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AofTest {
 
@@ -71,37 +74,39 @@ class AofTest {
 
     @Test
     @DisplayName("SETEX 데이터는 재시작 후에도 원래 만료 시각을 유지한다")
-    void recoverTtlWithOriginalExpiration() throws InterruptedException {
+    void recoverTtlWithOriginalExpiration() {
         Path aofPath = tempDir.resolve("ttl.aof");
+        AtomicLong now = new AtomicLong(1_000);
         AofManager writer = new AofManager(aofPath.toString());
-        KeyValueStore original = new KeyValueStore(writer);
-        original.setEx("session", "active", 250);
+        KeyValueStore original = new KeyValueStore(writer, now::get);
+        original.setEx("session", "active", 100);
         writer.close();
 
-        Thread.sleep(80);
+        now.addAndGet(40);
 
         AofManager reader = new AofManager(aofPath.toString());
-        KeyValueStore recovered = new KeyValueStore(reader);
+        KeyValueStore recovered = new KeyValueStore(reader, now::get);
         reader.load(recovered);
         assertThat(recovered.get("session")).isEqualTo("active");
 
-        Thread.sleep(200);
+        now.addAndGet(60);
         assertThat(recovered.get("session")).isNull();
         reader.close();
     }
 
     @Test
     @DisplayName("이미 만료된 SETEX 데이터는 재시작 시 복구하지 않는다")
-    void doNotRecoverAlreadyExpiredValue() throws InterruptedException {
+    void doNotRecoverAlreadyExpiredValue() {
         Path aofPath = tempDir.resolve("expired.aof");
+        AtomicLong now = new AtomicLong(1_000);
         AofManager writer = new AofManager(aofPath.toString());
-        new KeyValueStore(writer).setEx("session", "expired", 30);
+        new KeyValueStore(writer, now::get).setEx("session", "expired", 30);
         writer.close();
 
-        Thread.sleep(50);
+        now.addAndGet(30);
 
         AofManager reader = new AofManager(aofPath.toString());
-        KeyValueStore recovered = new KeyValueStore(reader);
+        KeyValueStore recovered = new KeyValueStore(reader, now::get);
         reader.load(recovered);
 
         assertThat(recovered.get("session")).isNull();
@@ -112,7 +117,10 @@ class AofTest {
     @DisplayName("기존 공백 구분 AOF 형식도 계속 읽을 수 있다")
     void loadLegacyAofFormat() throws IOException {
         Path aofPath = tempDir.resolve("legacy.aof");
-        Files.writeString(aofPath, "SET old value\nDEL removed\n");
+        Files.writeString(aofPath,
+                "SET old value\n"
+                        + "DEL removed\n"
+                        + "MR1\tSET\tb2xkMg==\tdmFsdWUy\n");
 
         AofManager reader = new AofManager(aofPath.toString());
         KeyValueStore recovered = new KeyValueStore(reader);
@@ -120,23 +128,113 @@ class AofTest {
         reader.load(recovered);
 
         assertThat(recovered.get("old")).isEqualTo("value");
+        assertThat(recovered.get("old2")).isEqualTo("value2");
         assertThat(recovered.get("removed")).isNull();
         reader.close();
     }
 
     @Test
-    @DisplayName("손상되거나 알 수 없는 AOF 줄은 나머지 복구를 막지 않는다")
-    void ignoreMalformedAofLines() throws IOException {
+    @DisplayName("줄바꿈까지 기록된 AOF 레코드가 손상되면 복구에 실패한다")
+    void rejectCompletedMalformedRecord() throws IOException {
         Path aofPath = tempDir.resolve("malformed.aof");
-        Files.writeString(aofPath, "BROKEN\nSET valid value\nMR1\tSET\tinvalid-base64\t%%%\n");
+        Files.writeString(aofPath, "SET valid value\nBROKEN\n");
+
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            assertThatThrownBy(() -> reader.load(new KeyValueStore(reader)))
+                    .isInstanceOf(AofCorruptionException.class)
+                    .hasMessageContaining("2번째 줄");
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("기록 중 잘린 마지막 AOF 레코드는 무시하고 이전 데이터까지 복구한다")
+    void ignoreTornLastRecord() throws IOException {
+        Path aofPath = tempDir.resolve("torn-tail.aof");
+        AofManager writer = new AofManager(aofPath.toString());
+        new KeyValueStore(writer).set("valid", "value");
+        writer.close();
+        Files.writeString(aofPath, "MR2\tSET\tdG9ybg==",
+                StandardOpenOption.APPEND);
+
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recovered = new KeyValueStore(reader);
+            reader.load(recovered);
+
+            assertThat(recovered.get("valid")).isEqualTo("value");
+            assertThat(recovered.get("torn")).isNull();
+            recovered.set("after-recovery", "saved");
+        } finally {
+            reader.close();
+        }
+
+        AofManager secondReader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recoveredAgain = new KeyValueStore(secondReader);
+            secondReader.load(recoveredAgain);
+
+            assertThat(recoveredAgain.get("valid")).isEqualTo("value");
+            assertThat(recoveredAgain.get("after-recovery")).isEqualTo("saved");
+        } finally {
+            secondReader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("완전한 레코드에서 줄바꿈만 빠진 경우 레코드를 살리고 다음 기록을 분리한다")
+    void preserveCompleteRecordWithoutFinalLineBreak() throws IOException {
+        Path aofPath = tempDir.resolve("missing-line-break.aof");
+        AofManager writer = new AofManager(aofPath.toString());
+        new KeyValueStore(writer).set("first", "value1");
+        writer.close();
+
+        byte[] content = Files.readAllBytes(aofPath);
+        int newLength = content.length;
+        while (newLength > 0 && (content[newLength - 1] == '\r' || content[newLength - 1] == '\n')) {
+            newLength--;
+        }
+        Files.write(aofPath, java.util.Arrays.copyOf(content, newLength));
 
         AofManager reader = new AofManager(aofPath.toString());
         KeyValueStore recovered = new KeyValueStore(reader);
         reader.load(recovered);
-
-        assertThat(recovered.get("valid")).isEqualTo("value");
-        assertThat(recovered.size()).isEqualTo(1);
+        assertThat(recovered.get("first")).isEqualTo("value1");
+        recovered.set("second", "value2");
         reader.close();
+
+        AofManager secondReader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recoveredAgain = new KeyValueStore(secondReader);
+            secondReader.load(recoveredAgain);
+            assertThat(recoveredAgain.get("first")).isEqualTo("value1");
+            assertThat(recoveredAgain.get("second")).isEqualTo("value2");
+        } finally {
+            secondReader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("체크섬은 문법상 유효해 보이는 AOF 값 변경도 감지한다")
+    void detectChecksumMismatch() throws IOException {
+        Path aofPath = tempDir.resolve("checksum.aof");
+        AofManager writer = new AofManager(aofPath.toString());
+        new KeyValueStore(writer).set("key", "value");
+        writer.close();
+
+        String original = Files.readString(aofPath);
+        Files.writeString(aofPath, original.replace("dmFsdWU=", "dmFsdWQ="));
+
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            assertThatThrownBy(() -> reader.load(new KeyValueStore(reader)))
+                    .isInstanceOf(AofCorruptionException.class)
+                    .hasMessageContaining("1번째 줄");
+        } finally {
+            reader.close();
+        }
     }
 
     @Test

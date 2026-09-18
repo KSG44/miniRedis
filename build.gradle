@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
 }
 
 group = 'com.example.miniredis'
@@ -18,4 +19,44 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    finalizedBy jacocoTestReport
 }
+
+jacoco {
+    toolVersion = '0.8.13'
+}
+
+def coverageExclusions = [
+        'com/example/miniredis/Main.class',
+        'com/example/miniredis/MiniRedisClient.class',
+        'com/example/miniredis/cli/**'
+]
+
+jacocoTestReport {
+    dependsOn test
+    classDirectories.setFrom(sourceSets.main.output.asFileTree.matching {
+        exclude coverageExclusions
+    })
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+jacocoTestCoverageVerification {
+    dependsOn test
+    classDirectories.setFrom(sourceSets.main.output.asFileTree.matching {
+        exclude coverageExclusions
+    })
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.85
+            }
+        }
+    }
+}
+
+check.dependsOn jacocoTestCoverageVerification

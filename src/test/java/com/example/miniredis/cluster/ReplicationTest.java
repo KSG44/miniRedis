@@ -3,21 +3,25 @@ package com.example.miniredis.cluster;
 import com.example.miniredis.network.RedisServer;
 import com.example.miniredis.persistence.AofManager;
 import com.example.miniredis.storage.KeyValueStore;
+import com.example.miniredis.testsupport.TestAwait;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ReplicationTest {
 
-    private static final int PRIMARY_PORT = 6382;
-    private static final String PRIMARY_AOF = "primary_test.aof";
+    @TempDir
+    Path tempDir;
 
     private KeyValueStore primaryStore;
     private KeyValueStore replicaStore;
@@ -25,26 +29,24 @@ class ReplicationTest {
     private Thread primaryServerThread;
     private RedisServer primaryServer;
     private ReplicaClient replicaClient;
+    private int primaryPort;
 
     @BeforeEach
     void setUp() throws InterruptedException {
-        File file = new File(PRIMARY_AOF);
-        if (file.exists()) file.delete();
-
         // 1. Primary 서버 기동
-        primaryAofManager = new AofManager(PRIMARY_AOF);
+        primaryAofManager = new AofManager(tempDir.resolve("primary.aof").toString());
         primaryStore = new KeyValueStore(primaryAofManager);
-        primaryServer = new RedisServer(PRIMARY_PORT, primaryStore, primaryAofManager);
+        primaryServer = new RedisServer(0, primaryStore, primaryAofManager);
 
         primaryServerThread = new Thread(primaryServer::start);
         primaryServerThread.start();
-        Thread.sleep(200);
+        primaryPort = primaryServer.awaitStarted(2, TimeUnit.SECONDS);
 
         // 2. Replica 메모리 및 동기화 클라이언트 생성
         replicaStore = new KeyValueStore();
-        replicaClient = new ReplicaClient("localhost", PRIMARY_PORT, replicaStore);
+        replicaClient = new ReplicaClient("localhost", primaryPort, replicaStore);
         replicaClient.startSync();
-        Thread.sleep(200);
+        replicaClient.awaitSyncStarted(2, TimeUnit.SECONDS);
     }
 
     @AfterEach
@@ -65,8 +67,6 @@ class ReplicationTest {
         if (primaryAofManager != null) {
             primaryAofManager.close();
         }
-        File file = new File(PRIMARY_AOF);
-        if (file.exists()) file.delete();
     }
 
     @Test
@@ -74,14 +74,14 @@ class ReplicationTest {
     void replicationSyncTest() throws Exception {
         // Primary 서버로 SET 명령어 전송
         try (
-                Socket socket = new Socket("localhost", PRIMARY_PORT);
+                Socket socket = new Socket("localhost", primaryPort);
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)
         ) {
             out.println("SET cluster_key hello_replica");
         }
 
-        // 동기화 네트워크 전송 대기
-        Thread.sleep(300);
+        TestAwait.until(Duration.ofSeconds(2),
+                () -> "hello_replica".equals(replicaStore.get("cluster_key")));
 
         // Replica의 메모리 저장소에서 Primary가 넘겨준 값이 존재하는지 확인
         assertThat(replicaStore.get("cluster_key")).isEqualTo("hello_replica");
@@ -92,7 +92,8 @@ class ReplicationTest {
     void replicationPreservesSpecialValues() throws Exception {
         primaryStore.set("사용자 이름", "홍 길동");
 
-        Thread.sleep(200);
+        TestAwait.until(Duration.ofSeconds(2),
+                () -> "홍 길동".equals(replicaStore.get("사용자 이름")));
 
         assertThat(replicaStore.get("사용자 이름")).isEqualTo("홍 길동");
     }
@@ -100,12 +101,10 @@ class ReplicationTest {
     @Test
     @DisplayName("SETEX의 만료 시각도 Replica에 전파되어야 한다")
     void replicationPreservesExpiration() throws Exception {
-        primaryStore.setEx("session", "active", 150);
-        Thread.sleep(50);
-
-        assertThat(replicaStore.get("session")).isEqualTo("active");
-
-        Thread.sleep(130);
-        assertThat(replicaStore.get("session")).isNull();
+        primaryStore.setEx("session", "active", 300);
+        TestAwait.until(Duration.ofSeconds(2),
+                () -> "active".equals(replicaStore.get("session")));
+        TestAwait.until(Duration.ofSeconds(2),
+                () -> replicaStore.get("session") == null);
     }
 }
