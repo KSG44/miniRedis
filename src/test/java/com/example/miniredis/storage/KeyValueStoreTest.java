@@ -95,4 +95,86 @@ class KeyValueStoreTest {
         assertThat(store.size()).isEqualTo(1);
         assertThat(store.keys()).containsExactly("alive");
     }
+
+    @Test
+    @DisplayName("EXISTS는 만료된 Key를 존재하는 것으로 판단하지 않는다")
+    void existsExcludesExpiredKey() {
+        store.setEx("key", "value", 100);
+        assertThat(store.exists("key")).isTrue();
+
+        now.addAndGet(100);
+
+        assertThat(store.exists("key")).isFalse();
+    }
+
+    @Test
+    @DisplayName("EXPIRE는 기존 Key에 TTL을 설정하고 TTL은 남은 초를 반환한다")
+    void expireAndTtl() {
+        store.set("key", "value");
+
+        assertThat(store.expire("key", 2_500)).isTrue();
+        assertThat(store.ttlSeconds("key")).isEqualTo(2);
+
+        now.addAndGet(1_500);
+        assertThat(store.ttlSeconds("key")).isEqualTo(1);
+
+        now.addAndGet(1_000);
+        assertThat(store.ttlSeconds("key")).isEqualTo(-2);
+    }
+
+    @Test
+    @DisplayName("EXPIRE는 없는 Key에 false를 반환하고 0 이하 TTL은 기존 Key를 삭제한다")
+    void expireMissingAndNonPositiveTtl() {
+        assertThat(store.expire("missing", 1_000)).isFalse();
+
+        store.set("key", "value");
+        assertThat(store.expire("key", 0)).isTrue();
+        assertThat(store.get("key")).isNull();
+    }
+
+    @Test
+    @DisplayName("TTL은 영구 Key에 -1, 없는 Key에 -2를 반환한다")
+    void ttlSentinelValues() {
+        store.set("persistent", "value");
+
+        assertThat(store.ttlSeconds("persistent")).isEqualTo(-1);
+        assertThat(store.ttlSeconds("missing")).isEqualTo(-2);
+    }
+
+    @Test
+    @DisplayName("INCR은 없는 Key를 1로 만들고 기존 정수를 증가시킨다")
+    void incrementMissingAndExistingValue() {
+        assertThat(store.increment("counter")).isEqualTo(1);
+        assertThat(store.increment("counter")).isEqualTo(2);
+        assertThat(store.get("counter")).isEqualTo("2");
+
+        store.set("negative", "-2");
+        assertThat(store.increment("negative")).isEqualTo(-1);
+    }
+
+    @Test
+    @DisplayName("INCR은 기존 TTL을 유지한다")
+    void incrementPreservesTtl() {
+        store.setEx("counter", "1", 2_000);
+
+        assertThat(store.increment("counter")).isEqualTo(2);
+        assertThat(store.ttlSeconds("counter")).isEqualTo(2);
+
+        now.addAndGet(2_000);
+        assertThat(store.get("counter")).isNull();
+    }
+
+    @Test
+    @DisplayName("INCR은 정수가 아니거나 overflow가 발생하면 기존 값을 변경하지 않는다")
+    void incrementRejectsInvalidValueAndOverflow() {
+        store.set("text", "hello");
+        store.set("max", Long.toString(Long.MAX_VALUE));
+
+        assertThatThrownBy(() -> store.increment("text"))
+                .isInstanceOf(NumberFormatException.class);
+        assertThatThrownBy(() -> store.increment("max"))
+                .isInstanceOf(ArithmeticException.class);
+        assertThat(store.get("text")).isEqualTo("hello");
+        assertThat(store.get("max")).isEqualTo(Long.toString(Long.MAX_VALUE));
+    }
 }

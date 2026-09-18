@@ -23,6 +23,10 @@ public class CommandDispatcher {
         commandMap.put("SETEX", new SetExCommand(store));
         commandMap.put("GET", new GetCommand(store));
         commandMap.put("DEL", new DelCommand(store));
+        commandMap.put("EXISTS", new ExistsCommand(store));
+        commandMap.put("EXPIRE", new ExpireCommand(store));
+        commandMap.put("TTL", new TtlCommand(store));
+        commandMap.put("INCR", new IncrCommand(store));
         commandMap.put("REPLCONF", new ReplConfCommand());
         commandMap.put("INFO", new InfoCommand(store, stats));
     }

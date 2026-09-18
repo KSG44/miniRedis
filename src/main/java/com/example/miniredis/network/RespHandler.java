@@ -24,13 +24,13 @@ public class RespHandler {
     /**
      * RESP 프로토콜 또는 일반 텍스트 명령어를 읽어서 파싱 후 응답 생성
      */
-    public String processCommand(InputStream input) throws IOException {
+    public RespResult processCommand(InputStream input) throws IOException {
 
         String firstLine;
         try {
             firstLine = readLine(input);
         } catch (ProtocolException e) {
-            return protocolError(e.getMessage());
+            return RespResult.protocolError(e.getMessage());
         }
 
         if (firstLine == null) {
@@ -40,7 +40,7 @@ public class RespHandler {
         firstLine = firstLine.trim();
 
         if (firstLine.isEmpty()) {
-            return "";
+            return RespResult.keepOpen("");
         }
 
         // RESP Array 형식
@@ -49,26 +49,26 @@ public class RespHandler {
             try {
                 int count = parseNonNegativeNumber(firstLine.substring(1), "invalid array length");
                 if (count == 0) {
-                    return protocolError("empty array is not a command");
+                    return RespResult.protocolError("empty array is not a command");
                 }
                 if (count > MAX_ARRAY_LENGTH) {
-                    return protocolError("array length exceeds limit");
+                    return RespResult.protocolError("array length exceeds limit");
                 }
 
                 String[] args = new String[count];
                 for (int i = 0; i < count; i++) {
                     String lengthLine = readRequiredLine(input);
                     if (!lengthLine.startsWith("$")) {
-                        return protocolError("expected bulk string");
+                        return RespResult.protocolError("expected bulk string");
                     }
 
                     int length = parseNonNegativeNumber(lengthLine.substring(1), "invalid bulk length");
                     if (length > MAX_BULK_LENGTH) {
-                        return protocolError("bulk length exceeds limit");
+                        return RespResult.protocolError("bulk length exceeds limit");
                     }
                     byte[] value = input.readNBytes(length);
                     if (value.length != length) {
-                        return protocolError("unexpected end of bulk string");
+                        return RespResult.protocolError("unexpected end of bulk string");
                     }
                     expectCrlf(input);
                     args[i] = new String(value, StandardCharsets.UTF_8);
@@ -76,7 +76,7 @@ public class RespHandler {
 
                 return executeAndFormat(args);
             } catch (ProtocolException e) {
-                return protocolError(e.getMessage());
+                return RespResult.protocolError(e.getMessage());
             }
 
         } else {
@@ -91,8 +91,8 @@ public class RespHandler {
     /**
      * 명령 실행은 Dispatcher에게 위임
      */
-    private String executeAndFormat(String[] args) {
-        return dispatcher.execute(args);
+    private RespResult executeAndFormat(String[] args) {
+        return RespResult.keepOpen(dispatcher.execute(args));
     }
 
     private int parseNonNegativeNumber(String value, String errorMessage) throws ProtocolException {
@@ -134,10 +134,6 @@ public class RespHandler {
         if (input.read() != '\r' || input.read() != '\n') {
             throw new ProtocolException("expected CRLF after bulk string");
         }
-    }
-
-    private String protocolError(String message) {
-        return "-ERR Protocol error: " + message + "\r\n";
     }
 
     private static class ProtocolException extends Exception {

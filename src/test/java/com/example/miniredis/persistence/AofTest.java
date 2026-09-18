@@ -6,12 +6,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -134,16 +140,22 @@ class AofTest {
     }
 
     @Test
-    @DisplayName("줄바꿈까지 기록된 AOF 레코드가 손상되면 복구에 실패한다")
-    void rejectCompletedMalformedRecord() throws IOException {
+    @DisplayName("중간 레코드가 손상되면 앞선 정상 레코드도 저장소에 적용하지 않는다")
+    void rejectCompletedMalformedRecordAtomically() throws IOException {
         Path aofPath = tempDir.resolve("malformed.aof");
         Files.writeString(aofPath, "SET valid value\nBROKEN\n");
 
         AofManager reader = new AofManager(aofPath.toString());
         try {
-            assertThatThrownBy(() -> reader.load(new KeyValueStore(reader)))
+            KeyValueStore recovered = new KeyValueStore(reader);
+            recovered.setWithoutAof("existing", "preserved");
+
+            assertThatThrownBy(() -> reader.load(recovered))
                     .isInstanceOf(AofCorruptionException.class)
                     .hasMessageContaining("2번째 줄");
+            assertThat(recovered.get("existing")).isEqualTo("preserved");
+            assertThat(recovered.get("valid")).isNull();
+            assertThat(recovered.size()).isEqualTo(1);
         } finally {
             reader.close();
         }
@@ -253,5 +265,156 @@ class AofTest {
         assertThat(records).hasSize(1);
         assertThat(AofManager.applyRecord(records.getFirst(), new KeyValueStore())).isTrue();
         manager.close();
+    }
+
+    @Test
+    @DisplayName("디렉터리를 AOF 파일로 지정하면 초기화 실패 원인을 전달한다")
+    void rejectDirectoryAsAofFile() {
+        assertThatThrownBy(() -> new AofManager(tempDir.toString()))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasMessageContaining("AOF 파일 초기화 실패")
+                .hasMessageContaining(tempDir.toString());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 상위 디렉터리의 AOF 파일은 초기화에 실패한다")
+    void rejectAofFileInMissingDirectory() {
+        Path aofPath = tempDir.resolve("missing").resolve("appendonly.aof");
+
+        assertThatThrownBy(() -> new AofManager(aofPath.toString()))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasMessageContaining("AOF 파일 초기화 실패");
+    }
+
+    @Test
+    @DisplayName("종료된 AOF에 기록하면 명확한 오류를 반환한다")
+    void rejectWriteAfterClose() {
+        AofManager manager = new AofManager(tempDir.resolve("closed.aof").toString());
+        manager.close();
+
+        assertThatThrownBy(() -> manager.appendSet("key", "value"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("종료된 AOF");
+    }
+
+    @Test
+    @DisplayName("AOF close는 여러 번 호출해도 안전하다")
+    void closeIsIdempotent() {
+        AofManager manager = new AofManager(tempDir.resolve("idempotent-close.aof").toString());
+
+        manager.close();
+        manager.close();
+    }
+
+    @Test
+    @DisplayName("EXPIRE로 설정한 만료 시각은 재시작 후에도 유지된다")
+    void recoverExpireCommand() {
+        Path aofPath = tempDir.resolve("expire.aof");
+        AtomicLong now = new AtomicLong(1_000);
+        AofManager writer = new AofManager(aofPath.toString());
+        KeyValueStore original = new KeyValueStore(writer, now::get);
+        original.set("session", "active");
+        original.expire("session", 5_000);
+        writer.close();
+
+        now.addAndGet(1_000);
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recovered = new KeyValueStore(reader, now::get);
+            reader.load(recovered);
+
+            assertThat(recovered.get("session")).isEqualTo("active");
+            assertThat(recovered.ttlSeconds("session")).isEqualTo(4);
+
+            now.addAndGet(4_000);
+            assertThat(recovered.get("session")).isNull();
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("INCR 결과와 기존 TTL은 AOF 복구 후에도 유지된다")
+    void recoverIncrementWithAndWithoutTtl() {
+        Path aofPath = tempDir.resolve("increment.aof");
+        AtomicLong now = new AtomicLong(1_000);
+        AofManager writer = new AofManager(aofPath.toString());
+        KeyValueStore original = new KeyValueStore(writer, now::get);
+        original.set("persistent", "1");
+        original.increment("persistent");
+        original.setEx("expiring", "5", 10_000);
+        original.increment("expiring");
+        writer.close();
+
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recovered = new KeyValueStore(reader, now::get);
+            reader.load(recovered);
+
+            assertThat(recovered.get("persistent")).isEqualTo("2");
+            assertThat(recovered.ttlSeconds("persistent")).isEqualTo(-1);
+            assertThat(recovered.get("expiring")).isEqualTo("6");
+            assertThat(recovered.ttlSeconds("expiring")).isEqualTo(10);
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("동시 INCR의 최종 값과 AOF 복구 결과가 일치한다")
+    void concurrentIncrementKeepsAofOrder() throws Exception {
+        Path aofPath = tempDir.resolve("concurrent-increment.aof");
+        AofManager writer = new AofManager(aofPath.toString());
+        KeyValueStore original = new KeyValueStore(writer);
+        ExecutorService executor = Executors.newFixedThreadPool(8);
+        CountDownLatch completed = new CountDownLatch(100);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try {
+            for (int index = 0; index < 100; index++) {
+                executor.execute(() -> {
+                    try {
+                        original.increment("counter");
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        completed.countDown();
+                    }
+                });
+            }
+
+            assertThat(completed.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(failure.get()).isNull();
+            assertThat(original.get("counter")).isEqualTo("100");
+        } finally {
+            executor.shutdownNow();
+            writer.close();
+        }
+
+        AofManager reader = new AofManager(aofPath.toString());
+        try {
+            KeyValueStore recovered = new KeyValueStore(reader);
+            reader.load(recovered);
+            assertThat(recovered.get("counter")).isEqualTo("100");
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
+    @DisplayName("AOF 쓰기 실패 시 메모리 값을 먼저 변경하지 않는다")
+    void failedAofWriteDoesNotMutateStore() {
+        AofManager manager = new AofManager(tempDir.resolve("failed-write.aof").toString());
+        KeyValueStore store = new KeyValueStore(manager);
+        store.setWithoutAof("existing", "value");
+        manager.close();
+
+        assertThatThrownBy(() -> store.set("new", "value"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> store.delete("existing"))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(store.get("new")).isNull();
+        assertThat(store.get("existing")).isEqualTo("value");
     }
 }

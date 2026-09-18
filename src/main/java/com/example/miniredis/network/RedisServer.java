@@ -102,10 +102,11 @@ public class RedisServer implements AutoCloseable {
                 OutputStream output = clientSocket.getOutputStream()
         ) {
             while (true) {
-                String response = respHandler.processCommand(input);
-                if (response == null) {
+                RespResult result = respHandler.processCommand(input);
+                if (result == null) {
                     break;
                 }
+                String response = result.response();
                 if (!response.isEmpty()) {
                     output.write(response.getBytes(StandardCharsets.UTF_8));
                     output.flush();
@@ -124,6 +125,9 @@ public class RedisServer implements AutoCloseable {
                         };
                         aofManager.addCommandListener(replicationListener);
                     }
+                }
+                if (result.closeConnection()) {
+                    break;
                 }
             }
         } catch (IOException ignored) {
