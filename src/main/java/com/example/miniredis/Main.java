@@ -7,6 +7,8 @@ import com.example.miniredis.server.ServerStats;
 import com.example.miniredis.storage.KeyValueStore;
 import com.example.miniredis.storage.scheduler.ActiveExpirationScheduler;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 public class Main {
 
     public static void main(String[] args) {
@@ -19,26 +21,38 @@ public class Main {
             return;
         }
 
-        // 1. AOF 및 Store 초기화
-        AofManager aofManager = new AofManager(config.aofPath().toString());
-        KeyValueStore store = new KeyValueStore(aofManager);
+        try (AofManager aofManager = new AofManager(config.aofPath().toString())) {
+            KeyValueStore store = new KeyValueStore(aofManager);
+            aofManager.load(store);
 
-        // 2. 기존 AOF 로드
-        aofManager.load(store);
+            ActiveExpirationScheduler scheduler = new ActiveExpirationScheduler(store);
+            RedisServer server = new RedisServer(config.port(), store, aofManager, new ServerStats());
+            AtomicBoolean stopped = new AtomicBoolean();
+            Runnable stopResources = () -> {
+                if (stopped.compareAndSet(false, true)) {
+                    server.stop();
+                    scheduler.stop();
+                    aofManager.close();
+                }
+            };
+            Thread shutdownHook = new Thread(stopResources, "mini-redis-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
 
-        ServerStats stats = new ServerStats();
+            try {
+                scheduler.start();
+                server.start();
+            } finally {
+                stopResources.run();
+                removeShutdownHook(shutdownHook);
+            }
+        }
+    }
 
-        ActiveExpirationScheduler scheduler = new ActiveExpirationScheduler(store);
-        scheduler.start();
-
-        RedisServer server = new RedisServer(config.port(), store, aofManager, stats);
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            server.stop();
-            scheduler.stop();
-            aofManager.close();
-        }));
-
-        server.start();
-
+    private static void removeShutdownHook(Thread shutdownHook) {
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM 종료가 이미 시작되어 shutdown hook이 실행 중인 경우
+        }
     }
 }

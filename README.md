@@ -85,11 +85,13 @@ Java로 Redis의 핵심 동작을 직접 구현하며 저장소, 네트워크, �
 - Lazy/Active Expiration
 - 명령어별 정상 입력과 잘못된 인자
 - RESP 파싱, UTF-8, 손상된 요청
+- 내장 클라이언트의 UTF-8 응답, CRLF 요청, 포트 옵션과 손상된 응답 처리
 - AOF 기록, 삭제, 특수문자, TTL 복구, 체크섬, 잘린 꼬리 복구, 이전 형식 호환
 - AOF 생성 실패, 종료 후 쓰기와 반복 종료 오류 경로
 - 동시 `INCR` 이후 메모리와 AOF 복구 결과 일치
 - TCP 서버 요청과 정상 종료
 - 포트 충돌, 서버 시작 실패와 시작 대기 시간 초과
+- 서버 시작 실패 시 프로세스와 백그라운드 작업 종료
 - 다중 클라이언트 요청
 - 기본 복제와 TTL 전달
 - INFO와 서버 통계
@@ -112,7 +114,7 @@ Windows에서는 다음 명령을 사용할 수 있다.
 ./gradlew check
 ```
 
-`check`는 핵심 코드의 라인 커버리지가 85% 미만이면 실패한다. 직접 실행되는 `Main`, 대화형 클라이언트와 콘솔 입력 루프는 이 기준에서 제외한다.
+`check`는 핵심 코드의 라인 커버리지가 85% 미만이면 실패한다. 별도 프로세스 통합 테스트로 검증하는 `Main`만 커버리지 계산에서 제외한다.
 
 ## 실행
 
@@ -126,7 +128,7 @@ java -cp build/classes/java/main com.example.miniredis.Main
 기본 포트는 `6379`, 기본 AOF 경로는 `appendonly.aof`다. 필요한 경우 실행 인자로 변경할 수 있다.
 
 ```shell
-java -cp build/classes/java/main com.example.miniredis.Main --port 6380 --aof data/mini.aof
+java -cp build/classes/java/main com.example.miniredis.Main --port 6380 --aof mini.aof
 ```
 
 지원하는 옵션:
@@ -135,11 +137,18 @@ java -cp build/classes/java/main com.example.miniredis.Main --port 6380 --aof da
 - `--aof <file-path>`
 
 잘못된 값, 누락된 값, 중복 옵션과 알 수 없는 옵션은 서버를 시작하지 않고 설정 오류로 처리한다.
+현재 구현은 AOF 파일의 상위 디렉터리를 자동으로 만들지 않으므로, 디렉터리가 포함된 경로를 지정한다면 먼저 해당 디렉터리를 만들어야 한다.
 
 별도 터미널에서 클라이언트 실행:
 
 ```shell
 java -cp build/classes/java/main com.example.miniredis.MiniRedisClient
+```
+
+서버 포트를 변경했다면 클라이언트에도 같은 포트를 지정한다.
+
+```shell
+java -cp build/classes/java/main com.example.miniredis.MiniRedisClient --port 6380
 ```
 
 사용 예:
@@ -154,6 +163,15 @@ gon
 miniRedis> SETEX session 10 active
 OK
 ```
+
+내장 클라이언트는 간단한 대화형 확인 용도이며 일반 텍스트 명령을 전송한다. 공백이나 빈 문자열을 Key 또는 Value에 포함하려면 RESP Array를 지원하는 클라이언트를 사용해야 한다.
+
+## 현재 제약
+
+- AOF는 명령마다 버퍼를 비우지만 디스크 동기화(`fsync`)까지 보장하지 않는다.
+- AOF rewrite나 압축이 없어 파일 크기가 계속 증가할 수 있다.
+- 문자열 자료형과 문서에 나열된 명령만 지원한다.
+- 내장 클라이언트는 로컬 서버(`localhost`) 연결만 지원한다.
 
 ## 프로젝트 구조
 

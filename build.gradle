@@ -27,9 +27,7 @@ jacoco {
 }
 
 def coverageExclusions = [
-        'com/example/miniredis/Main.class',
-        'com/example/miniredis/MiniRedisClient.class',
-        'com/example/miniredis/cli/**'
+        'com/example/miniredis/Main.class'
 ]
 
 jacocoTestReport {
